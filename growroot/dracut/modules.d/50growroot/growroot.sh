@@ -8,13 +8,15 @@
 # This is a table of commands necessary to fsck particular filesystem
 # types prior to resizing them.  Defining an fsck command means that
 # it must succeed for the resize to be attempted.
-FSCK_ext3="e2fsck -f"
-FSCK_ext4="e2fsck -f"
+FSCK_ext2="e2fsck -fy"
+FSCK_ext3="e2fsck -fy"
+FSCK_ext4="e2fsck -fy"
 
 # This is a table of commands necessary to resize particular
 # filesystem types.
-RESIZE_ext3=resize2fs
 RESIZE_ext2=resize2fs
+RESIZE_ext3=resize2fs
+RESIZE_ext4=resize2fs
 RESIZE_xfs=xfs_growfs
 
 _info() {
