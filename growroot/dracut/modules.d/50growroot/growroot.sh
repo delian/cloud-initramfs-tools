@@ -5,6 +5,18 @@
 
 . /lib/dracut-lib.sh
 
+# This is a table of commands necessary to fsck particular filesystem
+# types prior to resizing them.  Defining an fsck command means that
+# it must succeed for the resize to be attempted.
+FSCK_ext3="e2fsck -f"
+FSCK_ext4="e2fsck -f"
+
+# This is a table of commands necessary to resize particular
+# filesystem types.
+RESIZE_ext3=resize2fs
+RESIZE_ext2=resize2fs
+RESIZE_xfs=xfs_growfs
+
 _info() {
 	echo "growroot: $*"
 }
@@ -99,6 +111,23 @@ EOF
 	# Wait for the partition re-read events to complete so that the root
 	# partition is available for remounting
 	udevsettle
+
+	eval fsck_cmd="\"\${FSCK_${rootfs}}\""
+	eval resize_cmd="\"\${RESIZE_${rootfs}}\""
+
+	if [ "$resize_cmd" ]; then
+			# fsck the filesystem if required.  a failed fsck is fatal, since
+			# that presumably means we shouldn't even try the resize.
+			if [ "$fsck_cmd" ]; then
+					$fsck_cmd "${rootdev}" || \
+							_fatal "Failed to fsck ${rootdev}"
+			fi
+
+			# A failed resize generates a warning but we allow the boot to
+			# continue.
+			$resize_cmd "${rootdev}" || \
+					_warning "failed to resize ${rootdev}"
+	fi
 
 	# Remount the root filesystem
 	mount -t "${rootfs}" -o "${opts}" "${rootdev}" "${NEWROOT}" || \
