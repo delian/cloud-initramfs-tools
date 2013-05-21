@@ -8,9 +8,9 @@
 # This is a table of commands necessary to fsck particular filesystem
 # types prior to resizing them.  Defining an fsck command means that
 # it must succeed for the resize to be attempted.
-FSCK_ext2="e2fsck -fy"
-FSCK_ext3="e2fsck -fy"
-FSCK_ext4="e2fsck -fy"
+FSCK_ext2="e2fsck -fp"
+FSCK_ext3="e2fsck -fp"
+FSCK_ext4="e2fsck -fp"
 
 # This is a table of commands necessary to resize particular
 # filesystem types.
@@ -118,11 +118,12 @@ EOF
 	eval resize_cmd="\"\${RESIZE_${rootfs}}\""
 
 	if [ "$resize_cmd" ]; then
-			# fsck the filesystem if required.  a failed fsck is fatal, since
-			# that presumably means we shouldn't even try the resize.
+			# fsck the filesystem if required.  because e2fsck will sometimes return
+			# an error code even when there are no problems, we just ignore failures
+			# here and assume that the resize command will bail if something is 
+			# actually wrong.
 			if [ "$fsck_cmd" ]; then
-					$fsck_cmd "${rootdev}" || \
-							_fatal "Failed to fsck ${rootdev}"
+					$fsck_cmd "${rootdev}"
 			fi
 
 			# A failed resize generates a warning but we allow the boot to
