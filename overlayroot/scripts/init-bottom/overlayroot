@@ -45,7 +45,7 @@ VARIABLES="overlayroot overlayroot_cfgdisk"
 root_rw=/media/root-rw
 root_ro=/media/root-ro
 ROOTMNT=${rootmnt} # use global name to indicate created outside this
-OVERLAYROOT_DEBUG=0
+OVERLAYROOT_DEBUG=1
 
 log() {
 	"log_${1}_msg" "$MYTAG: $2";
@@ -429,6 +429,23 @@ readcfgd() {
 	set -f
 }
 
+fix_upstart_overlayfs() {
+	# inotify events on an overlayfs underlay do not propogate through
+	# a newly created overlay.  This causes job creation and deletion issues
+	# for upstart, which uses inotify on /etc/init. So ensure that the overlay
+	# explicitly has a /etc/init (LP: #1213925)
+	local root="$1"
+	local initctl="$root/sbin/initctl"
+	local eifile="/etc/init/.overlayfs-upstart-helper"
+
+	[ -e "$initctl" -o -L "$initctl" ] || return 0
+	[ -d "$root/etc/init" ] || return 0
+	echo "#upstart needs help for overlayfs (LP: #1213925)." \
+		> "$root/$eifile" ||
+		{ log_fail "failed to write $root/$eifile"; return 1; }
+	debug "created $eifile under $root (LP: #1213925)"
+}
+
 cfgd="${TEMP_D}/configs"
 mkdir -p "${cfgd}" || fail "failed to create tempdir"
 trap cleanup EXIT
@@ -486,39 +503,119 @@ if [ "${overlayroot_cfgdisk:-disabled}" != "disabled" ] &&
 		debug "${_RET_desc_oroot} set overlayroot=${overlayroot}"
 fi
 
-opts=""
-cfgmsg="${used_desc:+ (per ${used_desc})}"
-case "${overlayroot:-disabled}" in
-	tmpfs|tmpfs:*)
-		mode="tmpfs"
-		opts="${overlayroot#tmpfs}";
-		opts=${opts#:}
-		;;
-	/dev/*|device:*)
-		case "$overlayroot" in
-			/dev/*) opts="dev=${overlayroot}";;
-			*) opts="${overlayroot#device:}";;
-		esac
-		dev_setup "${opts}" ||
-			fail "failed setup overlay for ${overlayroot} [$opts]${cfgmsg}"
-		mode="device"
-		device="$_RET_DEVICE"
-		;;
-	crypt:*)
-		mode="crypt"
-		opts=${overlayroot#crypt:}
-		crypto_setup "${opts}" ||
-			fail "failed setup crypt for ${overlayroot}${cfgmsg}"
-		device="$_RET_DEVICE"
-		;;
-	disabled)
-		debug "overlayroot disabled${cfgmsg}"
-		exit 0;;
-	*)
-		fail "invalid value for overlayroot: ${overlayroot}${cfgmsg}"
-		exit 0;;
-esac
+# overlayroot_driver *could* be defined in one of the configs above
+# but we're not documenting that.
+overlayroot_driver=${overlayroot_driver:-overlayfs}
 
+# check if kernel module exists 
+modprobe -qb "${overlayroot_driver}" ||
+	fail "missing kernel module ${overlayroot_driver}"
+
+# make the mount point on the init root fs ${root_ro}
+mkdir -p "${root_ro}" ||
+	fail "failed to create ${root_ro}"
+
+OIFS="$IFS"
+IFS=";"
+SUFFIX=""
+SUFCOUNT=1
+DIRLIST=""
+MOUNTOPTS="rw"
+ROOTOPTS=""
+for overlaytmp in ${overlayroot:-disabled}
+do
+    IFS="$OIFS"
+	ROOTMOUNT="${root_rw}${SUFFIX}"
+    [ "${MOUNTOPTS}" == "ro" ] && ROOTMOUNT="${root_ro}${SUFFIX}"
+	if [ ! -d "${ROOTMOUNT}" ]; then
+		mkdir -p "${ROOTMOUNT}" || fail "failed to create ${ROOTMOUNT}"
+	fi
+	DIRLIST="${DIRLIST}:${ROOTMOUNT}"
+	
+    case "$overlaytmp" in
+		tmpfs|tmpfs:*)
+			mode="tmpfs"
+			opts="${overlayroot#tmpfs}";
+			opts=${opts#:}
+
+			parse_string "$opts" "," _RET_common_
+			swap=${_RET_common_swap:-0}
+			recurse=${_RET_common_recurse:-1}
+			OVERLAYROOT_DEBUG=${_RET_common_debug:-${OVERLAYROOT_DEBUG}}
+			dir_prefix=${_RET_common_dir}
+
+			debug "swap=$swap recurse=$recurse debug=$OVERLAYROOT_DEBUG dir=$dir_prefix"
+			debug "device=$device mode=$mode"
+			
+			mount -t tmpfs tmpfs-root "${ROOTMOUNT}" || fail "failed to create tmpfs into ${ROOTMOUNT}"
+			
+			;;
+		/dev/*|device:*)
+			case "$overlaytmp" in
+				/dev/*) opts="dev=${overlaytmp}";;
+				*) opts="${overlaytmp#device:}";;
+			esac
+			dev_setup "${opts}" ||
+				fail "failed setup overlay for ${overlaytmp} [$opts]${cfgmsg}"
+			mode="device"
+			device="$_RET_DEVICE"
+			
+			parse_string "$opts" "," _RET_common_
+			swap=${_RET_common_swap:-0}
+			recurse=${_RET_common_recurse:-1}
+			OVERLAYROOT_DEBUG=${_RET_common_debug:-${OVERLAYROOT_DEBUG}}
+			dir_prefix=${_RET_common_dir}
+
+			debug "swap=$swap recurse=$recurse debug=$OVERLAYROOT_DEBUG dir=$dir_prefix"
+			debug "device=$device mode=$mode"
+
+			mount -o $MOUNTOPTS "$device" "${ROOTMOUNT}" || fail "failed mount backing device $device"
+
+			;;
+		crypt:*)
+			mode="crypt"
+			opts=${overlaytmp#crypt:}
+			crypto_setup "${opts}" ||
+				fail "failed setup crypt for ${overlaytmp}${cfgmsg}"
+			device="$_RET_DEVICE"
+
+			parse_string "$opts" "," _RET_common_
+			swap=${_RET_common_swap:-0}
+			recurse=${_RET_common_recurse:-1}
+			OVERLAYROOT_DEBUG=${_RET_common_debug:-${OVERLAYROOT_DEBUG}}
+			dir_prefix=${_RET_common_dir}
+
+			debug "swap=$swap recurse=$recurse debug=$OVERLAYROOT_DEBUG dir=$dir_prefix"
+			debug "device=$device mode=$mode"
+
+			mount -o "$MOUNTOPTS" "$device" "${ROOTMOUNT}" || fail "failed mount backing device $device"
+
+			;;
+		disabled)
+			debug "overlayroot disabled${cfgmsg}"
+			exit 0;;
+		*)
+			fail "invalid value for overlayroot: ${overlayroot}${cfgmsg}"
+			exit 0;;
+	esac
+
+	[ "${MOUNTOPTS}" == "rw" ] && ROOTOPTS="${opts}"  # Lets preserve the opts for the RW disk
+		
+	SUFFIX="_$SUFCOUNT"
+	SUFCOUNT=$(($SUFCOUNT+1))
+    MOUNTOPTS="ro"  # Only the first in the list will be read write
+done
+
+debug "We have directories ${DIRLIST}"
+# Remove the top directory
+DIRLIST="${DIRLIST#:}"
+RWDIRLIST="${DIRLIST}"
+DIRLIST="${DIRLIST}:${root_ro}"
+DIRLIST="${DIRLIST#*:}"
+DIRLIST="${DIRLIST#:}"
+debug "We have readonly list like this ${DIRLIST}"
+
+opts="${ROOTOPTS}"
 parse_string "$opts" "," _RET_common_
 swap=${_RET_common_swap:-0}
 recurse=${_RET_common_recurse:-1}
@@ -535,20 +632,24 @@ debug "device=$device mode=$mode"
 
 log_warn "configuring overlayroot with mode=$mode opts='$opts' per $used_desc"
 
-# overlayroot_driver *could* be defined in one of the configs above
-# but we're not documenting that.
-overlayroot_driver=${overlayroot_driver:-overlayfs}
-
 # settings based on overlayroot_driver
+workdir=""
 case "${overlayroot_driver}" in
 	overlayfs)
 		mount_type="overlayfs"
-		mount_opts="-o lowerdir=${root_ro},upperdir=${root_rw}/${dir_prefix}"
+		mount_opts="-o lowerdir=${DIRLIST},upperdir=${root_rw}/${dir_prefix}"
+		# 3.18+ require 'workdir=' option.
+		case "$(uname -r)" in
+			2*|3.1[01234567]*|3.[0-9].*) :;;
+			*)
+				workdir="${dir_prefix%/}-workdir"
+				mount_opts="${mount_opts},workdir=${root_rw}/${workdir}";;
+		esac
 		mount_opts="${mount_opts} overlayroot ${ROOTMNT}"
 		;;
 	aufs)
 		mount_type="aufs"
-		mount_opts="-o dirs=${root_rw}/${dir_prefix}:${root_ro}=ro aufs-root ${ROOTMNT}"
+		mount_opts="-o dirs=${root_rw}/${dir_prefix}:${DIRLIST}=ro aufs-root ${ROOTMNT}"
 		;;
 	*)
 		log_fail "invalid overlayroot driver: ${overlayroot_driver}"
@@ -556,35 +657,28 @@ case "${overlayroot_driver}" in
 		;;
 esac
 
-# check if kernel module exists 
-modprobe -qb "${overlayroot_driver}" ||
-	fail "missing kernel module ${overlayroot_driver}"
-
-# make the mount point on the init root fs ${root_rw}
-mkdir -p "${root_rw}" ||
-	fail "failed to create ${root_rw}"
-
-# make the mount point on the init root fs ${root_ro}
-mkdir -p "${root_ro}" ||
-	fail "failed to create ${root_ro}"
-
-# mount the backing device to $root_rw
-if [ "$mode" = "tmpfs" ]; then
-	# mount a tmpfs using the device name tmpfs-root
-	mount -t tmpfs tmpfs-root "${root_rw}" ||
-		fail "failed to create tmpfs"
-else
-	# dev or crypto
-	mount "$device" "${root_rw}" ||
-		fail "failed mount backing device $device"
-fi
-
+# TODO: Smart recreation of the dir-prefix and workdir for each directory
 mkdir -p "${root_rw}/${dir_prefix}" ||
 	fail "failed to create ${dir_prefix} on ${device}"
 
+[ -z "$workdir" ] || mkdir -p "$root_rw/${workdir}" ||
+	fail "failed to create workdir '$workdir' on ${device}"
+
 # root is mounted on ${ROOTMNT}, move it to ${ROOT_RO}.
+
+echo "Move ${ROOTMNT} to ${root_ro}"
+
 mount --move "${ROOTMNT}" "${root_ro}" ||
 	fail "failed to move root away from ${ROOTMNT} to ${root_ro}"
+
+#mount
+
+#debug "Re-Create ${ROOTMNT} just in case"
+#mkdir -p "${ROOTMNT}"
+
+#ls -al "${ROOTMNT}/.."
+#
+#sh
 
 # there is nothing left at ${ROOTMNT} now. So for any error we get we should
 # either do recovery to restore ${ROOTMNT} for drop to a initramfs shell using
@@ -592,9 +686,11 @@ mount --move "${ROOTMNT}" "${root_ro}" ||
 # errors and leave the system in a wired state. 
 
 # mount virtual fs ${ROOTMNT} with rw-fs ${root_rw} on top or ro-fs ${root_ro}.
+debug mount -t "$mount_type" $mount_opts
 mount -t "$mount_type" $mount_opts
 if [ $? -ne 0 ]; then
 	log_fail "failed to create new ro/rw layered ${ROOTMNT}"
+	log_fail "mount command was: mount -t $mount_type $mount_opts"
 	# do recovery and try resoring the mount for ${ROOTMNT}
 	mount --move ${root_ro} ${ROOTMNT}
 	if [ $? -ne 0 ]; then
@@ -621,9 +717,16 @@ mount --move ${root_ro} "${ROOTMNT}${root_ro}" ||
 	fail "failed to move ${root_ro} to ${ROOTMNT}${root_ro}"
 
 # move mount from ${root_rw} to ${ROOTMNT}${root_rw} 
-[ -d ${ROOTMNT}${root_rw} ] || mkdir -p ${ROOTMNT}${root_rw}
-mount --move "${root_rw}" "${ROOTMNT}${root_rw}" ||
-	fail "failed to move ${root_rw} to ${ROOTMNT}${root_rw}"
+
+# TODO: Move all of the list
+OIFS="$IFS"
+IFS=":"
+for mDir in ${RWDIRLIST%:}
+do
+	IFS="$OIFS"
+	[ -d ${ROOTMNT}${mDir} ] || mkdir -p ${ROOTMNT}${mDir}
+	mount --move "${mDir}" "${ROOTMNT}${mDir}" || fail "failed to move ${mDir} to ${ROOTMNT}${mDir}"
+done
 
 # technically, everything is set up nicely now. Since ${ROOTMNT} had beend
 # mounted read-only on the initfamfs already, ${ROOTMNT}${root_ro} is it,
@@ -664,6 +767,11 @@ overlayrootify_fstab ""${ROOTMNT}${root_ro}/etc/fstab"" "$root_ro" \
 for d in ${_RET}; do
 	mkdir -p "${ROOTMNT}/$d"
 done
+
+if [ "${overlayroot_driver}" = "overlayfs" ]; then
+	fix_upstart_overlayfs "$ROOTMNT" ||
+		log_fail "failed to fix upstart for overlayfs"
+fi
 
 # if / is supposed to be mounted read-only (cmdline with 'ro')
 # then mount our overlayfs as read-only just to be more normal
