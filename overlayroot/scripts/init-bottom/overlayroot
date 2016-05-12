@@ -530,7 +530,6 @@ do
 	if [ ! -d "${ROOTMOUNT}" ]; then
 		mkdir -p "${ROOTMOUNT}" || fail "failed to create ${ROOTMOUNT}"
 	fi
-	DIRLIST="${DIRLIST}:${ROOTMOUNT}"
 	
     case "$overlaytmp" in
 		tmpfs|tmpfs:*)
@@ -598,6 +597,9 @@ do
 			fail "invalid value for overlayroot: ${overlayroot}${cfgmsg}"
 			exit 0;;
 	esac
+
+	[ -d "${ROOTMOUNT}${dir_prefix}" ] || mkdir -p "${ROOTMOUNT}${dir_prefix}"
+	DIRLIST="${DIRLIST}:${ROOTMOUNT}${dir_prefix}"
 
 	[ "${MOUNTOPTS}" == "rw" ] && ROOTOPTS="${opts}"  # Lets preserve the opts for the RW disk
 		
