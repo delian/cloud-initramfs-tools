@@ -521,7 +521,6 @@ SUFFIX=""
 SUFCOUNT=1
 DIRLIST=""
 MOUNTOPTS="rw"
-ROOTOPTS=""
 for overlaytmp in ${overlayroot:-disabled}
 do
     IFS="$OIFS"
@@ -530,21 +529,13 @@ do
 	if [ ! -d "${ROOTMOUNT}" ]; then
 		mkdir -p "${ROOTMOUNT}" || fail "failed to create ${ROOTMOUNT}"
 	fi
+	DIRLIST="${DIRLIST}:${ROOTMOUNT}"
 	
     case "$overlaytmp" in
 		tmpfs|tmpfs:*)
 			mode="tmpfs"
 			opts="${overlayroot#tmpfs}";
 			opts=${opts#:}
-
-			parse_string "$opts" "," _RET_common_
-			swap=${_RET_common_swap:-0}
-			recurse=${_RET_common_recurse:-1}
-			OVERLAYROOT_DEBUG=${_RET_common_debug:-${OVERLAYROOT_DEBUG}}
-			dir_prefix=${_RET_common_dir}
-
-			debug "swap=$swap recurse=$recurse debug=$OVERLAYROOT_DEBUG dir=$dir_prefix"
-			debug "device=$device mode=$mode"
 			
 			mount -t tmpfs tmpfs-root "${ROOTMOUNT}" || fail "failed to create tmpfs into ${ROOTMOUNT}"
 			
@@ -559,15 +550,6 @@ do
 			mode="device"
 			device="$_RET_DEVICE"
 			
-			parse_string "$opts" "," _RET_common_
-			swap=${_RET_common_swap:-0}
-			recurse=${_RET_common_recurse:-1}
-			OVERLAYROOT_DEBUG=${_RET_common_debug:-${OVERLAYROOT_DEBUG}}
-			dir_prefix=${_RET_common_dir}
-
-			debug "swap=$swap recurse=$recurse debug=$OVERLAYROOT_DEBUG dir=$dir_prefix"
-			debug "device=$device mode=$mode"
-
 			mount -o $MOUNTOPTS "$device" "${ROOTMOUNT}" || fail "failed mount backing device $device"
 
 			;;
@@ -577,15 +559,6 @@ do
 			crypto_setup "${opts}" ||
 				fail "failed setup crypt for ${overlaytmp}${cfgmsg}"
 			device="$_RET_DEVICE"
-
-			parse_string "$opts" "," _RET_common_
-			swap=${_RET_common_swap:-0}
-			recurse=${_RET_common_recurse:-1}
-			OVERLAYROOT_DEBUG=${_RET_common_debug:-${OVERLAYROOT_DEBUG}}
-			dir_prefix=${_RET_common_dir}
-
-			debug "swap=$swap recurse=$recurse debug=$OVERLAYROOT_DEBUG dir=$dir_prefix"
-			debug "device=$device mode=$mode"
 
 			mount -o "$MOUNTOPTS" "$device" "${ROOTMOUNT}" || fail "failed mount backing device $device"
 
@@ -597,11 +570,6 @@ do
 			fail "invalid value for overlayroot: ${overlayroot}${cfgmsg}"
 			exit 0;;
 	esac
-
-	[ -d "${ROOTMOUNT}${dir_prefix}" ] || mkdir -p "${ROOTMOUNT}${dir_prefix}"
-	DIRLIST="${DIRLIST}:${ROOTMOUNT}${dir_prefix}"
-
-	[ "${MOUNTOPTS}" == "rw" ] && ROOTOPTS="${opts}"  # Lets preserve the opts for the RW disk
 		
 	SUFFIX="_$SUFCOUNT"
 	SUFCOUNT=$(($SUFCOUNT+1))
@@ -617,7 +585,39 @@ DIRLIST="${DIRLIST#*:}"
 DIRLIST="${DIRLIST#:}"
 debug "We have readonly list like this ${DIRLIST}"
 
-opts="${ROOTOPTS}"
+#opts=""
+#cfgmsg="${used_desc:+ (per ${used_desc})}"
+#case "${overlayroot:-disabled}" in
+#	tmpfs|tmpfs:*)
+#		mode="tmpfs"
+#		opts="${overlayroot#tmpfs}";
+#		opts=${opts#:}
+#		;;
+#	/dev/*|device:*)
+#		case "$overlayroot" in
+#			/dev/*) opts="dev=${overlayroot}";;
+#			*) opts="${overlayroot#device:}";;
+#		esac
+#		dev_setup "${opts}" ||
+#			fail "failed setup overlay for ${overlayroot} [$opts]${cfgmsg}"
+#		mode="device"
+#		device="$_RET_DEVICE"
+#		;;
+#	crypt:*)
+#		mode="crypt"
+#		opts=${overlayroot#crypt:}
+#		crypto_setup "${opts}" ||
+#			fail "failed setup crypt for ${overlayroot}${cfgmsg}"
+#		device="$_RET_DEVICE"
+#		;;
+#	disabled)
+#		debug "overlayroot disabled${cfgmsg}"
+#		exit 0;;
+#	*)
+#		fail "invalid value for overlayroot: ${overlayroot}${cfgmsg}"
+#		exit 0;;
+#esac
+
 parse_string "$opts" "," _RET_common_
 swap=${_RET_common_swap:-0}
 recurse=${_RET_common_recurse:-1}
@@ -659,6 +659,21 @@ case "${overlayroot_driver}" in
 		;;
 esac
 
+# make the mount point on the init root fs ${root_rw}
+#mkdir -p "${root_rw}" ||
+#	fail "failed to create ${root_rw}"
+
+# mount the backing device to $root_rw
+#if [ "$mode" = "tmpfs" ]; then
+#	# mount a tmpfs using the device name tmpfs-root
+#	mount -t tmpfs tmpfs-root "${root_rw}" ||
+#		fail "failed to create tmpfs"
+#else
+#	# dev or crypto
+#	mount "$device" "${root_rw}" ||
+#		fail "failed mount backing device $device"
+#fi
+
 # TODO: Smart recreation of the dir-prefix and workdir for each directory
 mkdir -p "${root_rw}/${dir_prefix}" ||
 	fail "failed to create ${dir_prefix} on ${device}"
@@ -667,6 +682,12 @@ mkdir -p "${root_rw}/${dir_prefix}" ||
 	fail "failed to create workdir '$workdir' on ${device}"
 
 # root is mounted on ${ROOTMNT}, move it to ${ROOT_RO}.
+
+#debug "We shall run mount -t $mount_type $mount_opts"
+
+#ls -al /
+#echo "Mount"
+#mount
 
 echo "Move ${ROOTMNT} to ${root_ro}"
 
