@@ -515,10 +515,14 @@ modprobe -qb "${overlayroot_driver}" ||
 mkdir -p "${root_ro}" ||
 	fail "failed to create ${root_ro}"
 
+
+#debug ">>>>>>>>> ${overlayroot:-disabled}"
+#debug ">>>>>>>>> $(echo "${overlayroot:-disabled}" | tr -d -c ";")"
+#debug ">>>>>>>>> $(echo "${overlayroot:-disabled}" | tr -d -c ";" | wc -c)"
+SUFCOUNT=$(echo "${overlayroot:-disabled}" | tr -d -c ";" | wc -c)
 OIFS="$IFS"
 IFS=";"
 SUFFIX=""
-SUFCOUNT=1
 DIRLIST=""
 MOUNTOPTS="rw"
 for overlaytmp in ${overlayroot:-disabled}
@@ -571,12 +575,21 @@ do
 			exit 0;;
 	esac
 		
-	SUFFIX="_$SUFCOUNT"
-	SUFCOUNT=$(($SUFCOUNT+1))
-    MOUNTOPTS="ro"  # Only the first in the list will be read write
+	SUFFIX="-$SUFCOUNT"
+#    debug "suffix is $SUFFIX count is $SUFCOUNT"
+	SUFCOUNT=$(($SUFCOUNT-1))
+    MOUNTOPTS="ro"  # Only the first in the list will be read-write
+    case "$(uname -r)" in
+       2*|3*)
+          # Old kernel versions do not support multiple layers, so break
+          break;;
+       *) :;;
+    esac
 done
 
-debug "We have directories ${DIRLIST}"
+#debug "We have directories ${DIRLIST}"
+#debug "SUFCOUNT were $(echo "${overlayroot:-disabled}" | tr -d -c ";" | wc -c), $XXS"
+
 # Remove the top directory
 DIRLIST="${DIRLIST#:}"
 RWDIRLIST="${DIRLIST}"
@@ -584,39 +597,6 @@ DIRLIST="${DIRLIST}:${root_ro}"
 DIRLIST="${DIRLIST#*:}"
 DIRLIST="${DIRLIST#:}"
 debug "We have readonly list like this ${DIRLIST}"
-
-#opts=""
-#cfgmsg="${used_desc:+ (per ${used_desc})}"
-#case "${overlayroot:-disabled}" in
-#	tmpfs|tmpfs:*)
-#		mode="tmpfs"
-#		opts="${overlayroot#tmpfs}";
-#		opts=${opts#:}
-#		;;
-#	/dev/*|device:*)
-#		case "$overlayroot" in
-#			/dev/*) opts="dev=${overlayroot}";;
-#			*) opts="${overlayroot#device:}";;
-#		esac
-#		dev_setup "${opts}" ||
-#			fail "failed setup overlay for ${overlayroot} [$opts]${cfgmsg}"
-#		mode="device"
-#		device="$_RET_DEVICE"
-#		;;
-#	crypt:*)
-#		mode="crypt"
-#		opts=${overlayroot#crypt:}
-#		crypto_setup "${opts}" ||
-#			fail "failed setup crypt for ${overlayroot}${cfgmsg}"
-#		device="$_RET_DEVICE"
-#		;;
-#	disabled)
-#		debug "overlayroot disabled${cfgmsg}"
-#		exit 0;;
-#	*)
-#		fail "invalid value for overlayroot: ${overlayroot}${cfgmsg}"
-#		exit 0;;
-#esac
 
 parse_string "$opts" "," _RET_common_
 swap=${_RET_common_swap:-0}
@@ -659,21 +639,6 @@ case "${overlayroot_driver}" in
 		;;
 esac
 
-# make the mount point on the init root fs ${root_rw}
-#mkdir -p "${root_rw}" ||
-#	fail "failed to create ${root_rw}"
-
-# mount the backing device to $root_rw
-#if [ "$mode" = "tmpfs" ]; then
-#	# mount a tmpfs using the device name tmpfs-root
-#	mount -t tmpfs tmpfs-root "${root_rw}" ||
-#		fail "failed to create tmpfs"
-#else
-#	# dev or crypto
-#	mount "$device" "${root_rw}" ||
-#		fail "failed mount backing device $device"
-#fi
-
 # TODO: Smart recreation of the dir-prefix and workdir for each directory
 mkdir -p "${root_rw}/${dir_prefix}" ||
 	fail "failed to create ${dir_prefix} on ${device}"
@@ -683,25 +648,10 @@ mkdir -p "${root_rw}/${dir_prefix}" ||
 
 # root is mounted on ${ROOTMNT}, move it to ${ROOT_RO}.
 
-#debug "We shall run mount -t $mount_type $mount_opts"
-
-#ls -al /
-#echo "Mount"
-#mount
-
 echo "Move ${ROOTMNT} to ${root_ro}"
 
 mount --move "${ROOTMNT}" "${root_ro}" ||
 	fail "failed to move root away from ${ROOTMNT} to ${root_ro}"
-
-#mount
-
-#debug "Re-Create ${ROOTMNT} just in case"
-#mkdir -p "${ROOTMNT}"
-
-#ls -al "${ROOTMNT}/.."
-#
-#sh
 
 # there is nothing left at ${ROOTMNT} now. So for any error we get we should
 # either do recovery to restore ${ROOTMNT} for drop to a initramfs shell using
@@ -741,7 +691,6 @@ mount --move ${root_ro} "${ROOTMNT}${root_ro}" ||
 
 # move mount from ${root_rw} to ${ROOTMNT}${root_rw} 
 
-# TODO: Move all of the list
 OIFS="$IFS"
 IFS=":"
 for mDir in ${RWDIRLIST%:}
